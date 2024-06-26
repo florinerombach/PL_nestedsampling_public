@@ -1,0 +1,5 @@
+laser	spotsize (cm2)	power conversion factor	correction wavelength (nm)
+405	0.15	0.0604	000
+444	0.15	0.0691	000
+532	0.15	0.0615	000
+657	0.15	0.0425	498
