@@ -22,31 +22,33 @@ def log_likelihood(priors, param_vary_keys, param_dict, input_df, data):
 
     params_input = priors_to_inputdict(priors, param_vary_keys)
 
-    LL = np.empty(len(input_df.index))
+    meas_length = np.empty(len(input_df.index))
+    meas_sigma = np.empty(len(input_df.index))
+    meas_resid = np.empty(len(input_df.index))
 
     for i in input_df.index:
         
         if input_df.loc[i, 'measurement'] == 'trpl':
 
-            time, TRPL_data , noise_mask, exc_density = data[i]
-            TRPL_calc, _ = calc_TRPL(time, i, input_df, param_dict, params_input, exc_density, show_carrier_densities = False)
-            TRPL_sigma = np.sqrt(np.var(TRPL_data))  # should maybe be a parameter?
-
-            TRPL_residsq = ((TRPL_calc  - TRPL_data)**2 / TRPL_sigma**2) #[noise_mask]
-            TRPL_loglike = - 0.5 * np.sum(TRPL_residsq + np.log(2 * np.pi * TRPL_sigma**2))
-            LL[i] = TRPL_loglike
+            time, TRPL_data, noise_mask, exc_density = data[i]
+            TRPL_calc, _ = calc_TRPL(time, i, input_df, param_dict, params_input, exc_density)
+            y_calc = TRPL_calc[noise_mask]
+            y_data = TRPL_data[noise_mask]
+            sigma = np.std(y_data)
 
         elif input_df.loc[i, 'measurement'] == 'plqe':
 
-            generation_rates, PLQE_data = data[i]
-            PLQE_calc, _, _, _ = PLQE_function(generation_rates, i, input_df, param_dict, params_input, print_carrier_densities = False, print_fitting_info = False)
-            PLQE_sigma = 3e-4 # PLQE produced by noise - not quite right
+            generation_rates, y_data = data[i]
+            y_calc, _, _, _ = PLQE_function(generation_rates, i, input_df, param_dict, params_input)
+            sigma = np.std(y_data) # rough estimate - needs improvementß
 
-            PLQE_residsq = ((PLQE_calc  - PLQE_data)**2 / PLQE_sigma**2)
-            PLQE_loglike = - 0.5 * np.sum(PLQE_residsq + np.log(2 * np.pi * PLQE_sigma**2))
-            LL[i] = PLQE_loglike
-    
-    return np.sum(LL)
+        meas_resid[i] = np.sum(((y_data - y_calc)**2) / (2*(sigma**2)))
+        meas_length[i]= len(y_data)
+        meas_sigma[i] = sigma
+
+    LL = - ( np.log(2*np.pi)*np.sum(meas_length) + np.sum( meas_length*np.log(meas_sigma) + meas_resid ) )
+
+    return LL
 
 
 def post_run_info(results, nr_live_points, savepath, param_vary_list):
