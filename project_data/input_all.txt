@@ -1,0 +1,6 @@
+sample	bandgap (eV)	absorptance	thickness (nm)	measurement	trpl path	trpl intensity	trpl pulse type	plqe path	plqe laser
+H2	1.25	0.88	900	plqe	nan	nan	nan	./sample-data/PLQE.csv	657
+H2	1.25	0.88	900	trpl	./sample-data/trpl_1.dat	10	single	nan	nan
+H3	1.25	0.88	900	plqe	nan	nan	nan	./sample-data/PLQE.csv	657
+H3	1.25	0.88	900	trpl	./sample-data/trpl_7.dat	10	single	nan	nan
+
