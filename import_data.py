@@ -76,43 +76,48 @@ def import_trpl_data(path, mode, noise_threshhold):
                 time_raw.append(float(row[0]))
                 counts_raw.append(float(row[1]))
 
-    time_raw=np.array(time_raw)[:-5] #cut off last 5 data points bc they can be weird
-    counts_raw=np.array(counts_raw)[:-5]
+    time_raw=np.array(time_raw)[:-3] #cut off last 3 data points bc they can be weird
+    counts_raw=np.array(counts_raw)[:-3]
 
     # Define t=0 at the highest counts (expected to be the start of the pulse)
     if mode == 'burst':
-        # find rise by determining largest change over 5 succesive data points
-        t0_index = np.nanargmax( [np.var(counts_raw[50+i:50+i+5]) for i in range(len(counts_raw)-5-50)] ) + 50
+        # find rise by determining largest change over 2 succesive data points
+        t0_index = np.nanargmax( [np.var(counts_raw[50+i:50+i+2]) for i in range(len(counts_raw)-2-50)] ) + 51
     else:
-        t0_index = np.nanargmax(counts_raw)
+        # find rise by determining largest change over 2 succesive data points
+        t0_index = np.nanargmax( [np.var(counts_raw[i:i+2]) for i in range(len(counts_raw)-2)] ) +1
     t0 = time_raw[t0_index]
     time_processed = (time_raw - t0)[t0_index:]
 
-    # Calculate signal to noise (which is the average over the signal before the pulse)
-    signal_to_noise = counts_raw[t0_index:] / np.nanstd(counts_raw[t0_index:])
-    noise_cutoff_index = int(np.argwhere(signal_to_noise < noise_threshhold)[0][0] + t0_index)
-    noise_cutoff = time_processed[noise_cutoff_index]
-
     trpl_range_start = 0 
-    noise_mask = (time_processed >= trpl_range_start) & (time_processed <= noise_cutoff)
+    if noise_threshhold != None:
+        # Calculate signal to noise (which is the average over the signal before the pulse)
+        signal_to_noise = counts_raw[t0_index:] / np.mean(counts_raw[:t0_index])
+        noise_cutoff_index = int(np.argwhere(signal_to_noise < noise_threshhold)[0][0] + t0_index)
+        noise_cutoff = time_processed[noise_cutoff_index]
+        noise_mask = (time_processed >= trpl_range_start) & (time_processed <= noise_cutoff)
+    else:
+        noise_mask = time_processed >= trpl_range_start
 
     # normalize trpl data
-    counts = np.where(counts_raw[t0_index:] >= 0, counts_raw[t0_index:], 0) # set negative values to zero
-    counts_normalized = counts/np.nanmax(counts)
+    counts = np.where(counts_raw[t0_index:] == 0, 1, counts_raw[t0_index:])
+    counts_normalized = counts/counts[0]
 
-    return time_processed, counts_normalized, noise_mask
+    sigma = np.sqrt(counts) * (counts_normalized/counts)  + 0.01
+
+    return time_processed, counts_normalized, noise_mask, sigma
 
 
 def import_plqe_data(path, sample_name, plqe_laser_wl, plqe_laser_reference_file, sample_absorbtance, sample_thickness):
 
     PLQE_data = pd.read_csv(path)
-    print(sample_name)
 
     for col in PLQE_data.columns:
         if (sample_name  in col) and ('PLQE' in col):
             column_index = PLQE_data.columns.get_loc(col)
             PLQE = np.array(PLQE_data[col])
             power = np.array(PLQE_data.iloc[:,(column_index-1)])
+            sigma = np.array(PLQE_data.iloc[:,(column_index+1)])
 
     # load laser calibration file
     plqe_calibration = pd.read_csv(plqe_laser_reference_file, sep='\t')
@@ -123,7 +128,7 @@ def import_plqe_data(path, sample_name, plqe_laser_wl, plqe_laser_reference_file
     fluences = ((power/plqe_power_conversion_factor)/plqe_laser_ss) / (con.h*con.c/(plqe_laser_wl*1e-9)) # photons s-1 cm-2
     generation_rates = (fluences* sample_absorbtance/(sample_thickness * 1e-7)) # photons s-1 cm-3
 
-    return generation_rates[~np.isnan(PLQE)], PLQE[~np.isnan(PLQE)]
+    return generation_rates[~np.isnan(PLQE)], PLQE[~np.isnan(PLQE)], sigma[~np.isnan(PLQE)]
 
 
 def import_all_data(directory, input_df, trpl_laser_reference_file, noise_threshhold, plqe_laser_reference_file):
@@ -146,15 +151,16 @@ def import_all_data(directory, input_df, trpl_laser_reference_file, noise_thresh
             mode = list(input_df['trpl pulse type'])[i]
 
             exc_density = unpack_trpl_info(path, trpl_laser_reference_file, laser_intensity, sample_absorbtance, sample_thickness)
-            time_processed, counts_normalized, noise_mask = import_trpl_data(path, mode, noise_threshhold)
-            data[sample_index] = (time_processed, counts_normalized, noise_mask, exc_density)
+            time_processed, counts_normalized, noise_mask, sigma = import_trpl_data(path, mode, noise_threshhold)
+            data[sample_index] = (time_processed, counts_normalized, noise_mask, exc_density, sigma)
+            
 
         elif measurements[i] == 'plqe':
 
             path =  directory / list(input_df['plqe path'])[i]
             laser_wavelength = list(input_df['plqe laser'])[i]  # nm (wavelength)
 
-            generation_rates, plqe  = import_plqe_data(path, sample_name, laser_wavelength, plqe_laser_reference_file, sample_absorbtance, sample_thickness)
-            data[sample_index] = (generation_rates, plqe)
+            generation_rates, plqe, sigma  = import_plqe_data(path, sample_name, laser_wavelength, plqe_laser_reference_file, sample_absorbtance, sample_thickness)
+            data[sample_index] = (generation_rates, plqe, sigma)
 
     return data

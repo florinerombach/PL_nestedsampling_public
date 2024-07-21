@@ -1,4 +1,5 @@
 import numpy as np
+from scipy import stats
 import dynesty
 from collections import defaultdict
 from dynesty import plotting as dyplot
@@ -17,46 +18,59 @@ def priors_to_inputdict(priors, param_vary_keys):
 
     return params_input
 
+# Transforms the uniform random variables `u ~ Unif[0., 1.)` 
+# to the parameters of interest according to distributions defined above. 
+def prior_transform(u, param_vary_list):
+
+    priors = np.array(u)  # copy u
+
+    for i, param in enumerate(param_vary_list):
+        if param[4] == 'flat':
+            priors[i] = u[i]*(param[3]-param[2]) + param[2]
+        elif param[4] == 'normal':
+            priors[i] = stats.norm.ppf(u[i], np.mean(param[2:4]), (param[3]-param[2])/(2*2))
+
+    return priors
 
 def log_likelihood(priors, param_vary_keys, param_dict, input_df, data):
 
     params_input = priors_to_inputdict(priors, param_vary_keys)
 
-    meas_length = np.empty(len(input_df.index))
-    meas_sigma = np.empty(len(input_df.index))
-    meas_resid = np.empty(len(input_df.index))
+    LL = np.empty(len(input_df.index))
 
     for i in input_df.index:
+
+        y_calc, y_data, sigma = [None, None, None]
         
         if input_df.loc[i, 'measurement'] == 'trpl':
 
-            time, TRPL_data, noise_mask, exc_density = data[i]
-            TRPL_calc, _ = calc_TRPL(time, i, input_df, param_dict, params_input, exc_density)
-            y_calc = TRPL_calc[noise_mask]
-            y_data = TRPL_data[noise_mask]
-            sigma = np.std(y_data)
+            time, y_data, noise_mask, exc_density, sigma = data[i]
+            logspaced_indexes =  gen_log_space(len(time), round(len(time)/50) )
+            y_calc, _ = calc_TRPL(time, i, input_df, param_dict, params_input, exc_density)
+
+            noise_mask = noise_mask[logspaced_indexes]
+            y_calc = y_calc[noise_mask]
+            y_data = y_data[logspaced_indexes][noise_mask]
+            sigma = sigma[logspaced_indexes][noise_mask]
 
         elif input_df.loc[i, 'measurement'] == 'plqe':
 
-            generation_rates, y_data = data[i]
+            generation_rates, y_data, sigma = data[i]
             y_calc, _, _, _ = PLQE_function(generation_rates, i, input_df, param_dict, params_input)
-            sigma = np.std(y_data) # rough estimate - needs improvementß
 
-        meas_resid[i] = np.sum(((y_data - y_calc)**2) / (2*(sigma**2)))
-        meas_length[i]= len(y_data)
-        meas_sigma[i] = sigma
-
-    LL = - ( np.log(2*np.pi)*np.sum(meas_length) + np.sum( meas_length*np.log(meas_sigma) + meas_resid ) )
-
-    return LL
+        LL[i] = - 0.5 * np.sum( ((y_calc - y_data)**2 / sigma**2) + np.log(2 * np.pi * sigma**2))
+    
+    #print(LL)
+        
+    return np.sum(LL)
 
 
-def post_run_info(results, nr_live_points, savepath, param_vary_list):
+def post_run_info(results, nr_live_points, bound, sample, savepath, param_vary_list):
     
     ndim = len(param_vary_list)
 
     # Save parameters of sampling
-    runparams_save = pd.DataFrame({'Nr live points': nr_live_points, 
+    runparams_save = pd.DataFrame({'Nr live points': nr_live_points, 'Sampling method': sample, 'Bounding method': bound,
                                 'Nr accepted points':results['niter'],
                                 'Nr function calls':results['ncall'],
                                 'Sampling efficiency': results['eff']})
@@ -74,7 +88,7 @@ def post_run_info(results, nr_live_points, savepath, param_vary_list):
     logevidence = results['logz']
     logevidence_error = results['logzerr']
     information = results['information']
-    weights = np.exp(results['logwt'] - results['logz'][-1])
+    weights = results.importance_weights()
     samples_reweighted = dynesty.utils.resample_equal(samples_out, weights)
 
     results_save = pd.DataFrame({'active bound': iter_bound, 'sample origin iter': origin_sample, 
@@ -85,24 +99,42 @@ def post_run_info(results, nr_live_points, savepath, param_vary_list):
 
     for i, param in enumerate(param_vary_list):
         results_save[f'{param[0]}'] = samples_reweighted[:,i]   
+    param_names =  [p[0] for p in param_vary_list]
 
     print(results_save)
     results_save.to_csv(savepath / 'nested_sampling_results.csv')
+
+    #dynesty.utils.jitter_run(res, rstate=None, approx=False)
+    #dynesty.utils.quantile(x, q, weights=None)
+
+    mean, cov = dynesty.utils.mean_and_cov(samples_out, weights)
+    print('significant covariance found in', (np.abs(cov) > 0.3).nonzero())
+
+    std = np.std(samples_reweighted, axis = 0)
+    params_out = pd.DataFrame({'Parameter': param_names, 'Mean': mean, '2 stdev': 2*std})
+    print(params_out)
+    params_out.to_csv(savepath / 'nested_sampling_params_results.csv')
 
     fig1, axes = dyplot.runplot(results, logplot = True)  # summary (run) plot
     fig1.tight_layout()
     fig1.savefig(savepath / 'runplot.png')
 
-    param_names =  [p[0] for p in param_vary_list]
     fig2, axes = dyplot.traceplot(results, labels=param_names,
-                                fig=plt.subplots(ndim, 2, figsize=(16, 25)))
+                                fig=plt.subplots(ndim, 2, figsize=(16, 25)),
+                                quantiles = [0.025, 0.5, 0.975],
+                                smooth = 50, # posteriors are histograms with 50 bins
+                                connect = True, # shows particle paths
+                                show_titles = True # show quantiles
+                                )
     fig2.tight_layout()
     fig2.savefig(savepath / 'traceplot.png')
 
-    fig3, axes = dynesty.dyplot.cornerplot(results, show_titles=True, 
-                                title_kwargs={'y': 1.04}, labels=param_names,
-                                quantiles=None, max_n_ticks=3,
-                                fig=plt.subplots(ndim, ndim, figsize=(35, 35)))
+    fig3, axes = dyplot.cornerplot(results,
+                                labels=param_names,
+                                quantiles = [0.025, 0.5, 0.975],
+                                smooth = 50, # posteriors are histograms with 50 bins
+                                show_titles = True
+                                )
     fig3.savefig(savepath / 'cornerplot.png')
 
     return samples_reweighted
